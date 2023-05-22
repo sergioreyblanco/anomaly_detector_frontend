@@ -1,0 +1,104 @@
+---
+models:
+
+- name: zscore
+  retraining: 1 HOUR
+  delay: 4 MINUTE
+  train_type: fast
+  stream: offerable_stock_5min
+  parameters:
+    window_value: 24
+    query_hour_train: 
+      select
+        *
+      from
+        DIGITAL_DATA.STOCK.OFFERABLE_STOCK_STREAMS_V2_HOUR
+      WHERE
+        DIGITAL_DATA.STOCK.OFFERABLE_STOCK_STREAMS_V2_HOUR.ingestion_at > DATEADD(day, -3, GETDATE())
+    query_hour_detect: 
+      select
+        *
+      from
+        DIGITAL_DATA.STOCK.V_OFFERABLE_STOCK_STREAMS_V2_5MINUTES
+      WHERE
+        DIGITAL_DATA.STOCK.V_OFFERABLE_STOCK_STREAMS_V2_5MINUTES.ingestion_at > DATEADD(hour, -24, GETDATE())
+    query_coefficients:
+      select
+        name_store,
+        timestamp::TIMESTAMP_NTZ as timestamp,
+        day_rolling_avg,
+        day_rolling_std,
+        presales_avg
+      from
+        DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS
+      WHERE
+        timestamp = (select max(timestamp) from DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS)
+  tables:
+    zscore_coefficients:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP VARCHAR(40), DAY_ROLLING_AVG DECIMAL (20), 
+        DAY_ROLLING_STD DECIMAL (20), DAY_EWM DECIMAL (20), PRESALES_AVG DECIMAL (20)
+    zscore_coefficients_previous:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS_PREVIOUS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP TIMESTAMP, Z_SCORE_INDICADOR DECIMAL (20)
+
+- name: zscore_tiny
+  retraining: 1 HOUR
+  delay: 4 MINUTE
+  train_type: fast
+  stream: offerable_stock_5min
+  parameters:
+    window_value: 24
+    query_hour_train: 
+      select
+        *
+      from
+        DIGITAL_DATA.STOCK.OFFERABLE_STOCK_STREAMS_V2_HOUR
+      WHERE
+        DIGITAL_DATA.STOCK.OFFERABLE_STOCK_STREAMS_V2_HOUR.ingestion_at > DATEADD(day, -3, GETDATE())
+    query_hour_detect: 
+      select
+        *
+      from
+        DIGITAL_DATA.STOCK.V_OFFERABLE_STOCK_STREAMS_V2_5MINUTES
+      WHERE
+        DIGITAL_DATA.STOCK.V_OFFERABLE_STOCK_STREAMS_V2_5MINUTES.ingestion_at > DATEADD(hour, -24, GETDATE())
+    query_coefficients:
+      select
+        name_store,
+        timestamp::TIMESTAMP_NTZ as timestamp,
+        day_rolling_avg,
+        day_rolling_std,
+        presales_avg
+      from
+        DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS
+      WHERE
+        timestamp = (select max(timestamp) from DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS)
+  tables:
+    zscore_coefficients:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP VARCHAR(40), DAY_ROLLING_AVG DECIMAL (20), 
+        DAY_ROLLING_STD DECIMAL (20), DAY_EWM DECIMAL (20), PRESALES_AVG DECIMAL (20)
+    zscore_coefficients_previous:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_STREAMS_V2_HOUR_COEFFICIENTS_PREVIOUS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP TIMESTAMP, Z_SCORE_INDICADOR DECIMAL (20)
+
+
+
+
+
+
+
+
+credentials:
+
+- name: azure_storage_creds
+  keyvault: inandekvtweu1pro002
+  user: inditexanomalydetector-azure-storage-user
+  password: inditexanomalydetector-azure-storage-pass
+  url: inditexanomalydetector-azure-storage-url
+
+- name: azure_anomaly_detector_creds
+  keyvault: inandekvtweu1pro002
+  credentials: inditexanomalydetector-azure-anomalydetector-pass
+  endpoint: https://westeurope.api.cognitive.microsoft.com/

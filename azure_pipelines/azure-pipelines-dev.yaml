@@ -1,0 +1,524 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - dev
+
+
+
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  variables:
+  - group: DEV
+  jobs:
+    - job: Upload_Config_Files
+      steps:
+        - checkout: self
+          fetchDepth: 0
+
+        - task: UsePythonVersion@0
+          displayName: 'Use Python 3.7'
+          inputs:
+            versionSpec: '3.7'
+
+        - bash: |
+            # Global variables
+            config_files_array=("alerts" "channels" "models" "streams")
+
+            # Installing python and all packages
+            python -m pip install --upgrade pip
+            pip install databricks-cli
+            pip install pyyaml
+            echo "Installing databricks-cli completed"
+
+            # Log into Azure with SPN and set configurations        
+            az config set extension.use_dynamic_install=yes_without_prompt
+            az login --service-principal --username "${SPN_ID}" --password "${SPN_SECRET}" --tenant "${TENANT}"          
+            echo "Login completed"
+
+            # Get files that changed in this PR
+            files=$(git diff $(Build.SourceVersion)~ $(Build.SourceVersion) --name-only)           
+            readarray -t strarr <<<"$files"
+            echo "${#strarr[*]} $files"
+            
+
+            # For each file that changed
+            for val in "${strarr[@]}";
+            do
+              echo "$val"
+
+              # Are the files that changed from IAD interface?
+              flag=false
+              for cfa in "${config_files_array[@]}";
+              do
+                if [[ "$val" == *"$cfa"* ]] && [[ "$val" == *"dev"* ]]; then
+                  flag=true
+                fi
+              done
+
+
+
+              if [ "$flag" = true ]; then
+
+                # Uploading IAD interface files to Databricks
+                CONFIG_FILE_DBFS="dbfs:/config_files_pro/inditex_anomaly_detector/${val}"
+                CONFIG_FILE_ADO=$(Build.Repository.LocalPath)"/${val}"
+                dbfs cp --overwrite $CONFIG_FILE_ADO $CONFIG_FILE_DBFS
+                echo "Upload config files to Databricks"
+
+                # Uploading IAD interface files to Azure Storage
+                CONFIG_FILE_AZS="temp_config/${val}"
+                echo "${ACCOUNT_NAME}"
+                echo "${ACCOUNT_KEY}"
+                echo "${CONTAINER_NAME}"
+                echo "${CONFIG_FILE_AZS}"
+                echo "${CONFIG_FILE_ADO}"
+
+                az storage blob delete --account-name "${ACCOUNT_NAME}" --account-key "${ACCOUNT_KEY}" --container-name "${CONTAINER_NAME}"  --name "${CONFIG_FILE_AZS}"
+                az storage blob upload --account-name "${ACCOUNT_NAME}" --account-key "${ACCOUNT_KEY}" --container-name "${CONTAINER_NAME}" --file "${CONFIG_FILE_ADO}" --name "${CONFIG_FILE_AZS}"
+                echo "Upload config files to Azure Storage"
+
+
+                ############################################# Alerts.yaml #############################################
+                if [[ "$val" == *"alerts"* ]]; then
+
+                  # Get the stream, model and file names
+                  WORDTOREMOVE="alerts"
+                  ALERT_FILE=${val}
+                  WORDTOADD="streams"
+                  STREAM_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="channels"
+                  CHANNEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="models"
+                  MODEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  
+                  # Get the Alert names of each alert
+                  DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${ALERT_FILE}"
+                  FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                  NAMES=$(echo "$FILE_CONTENT" | \
+                  python -c "import sys, yaml; \
+                  print(str([i['name'] for i in yaml.safe_load(sys.stdin)['alerts']]).replace('[','').replace(']','').replace(',','').replace('\'',''))")
+                  IFS=', ' read -r -a names_array <<< "$NAMES"
+                  
+
+                  # Get the Stream names of each alert
+                  STREAMS=$(echo "$FILE_CONTENT" | \
+                  python -c "import sys, yaml; \
+                  print(str([i['stream'] for i in yaml.safe_load(sys.stdin)['alerts']]).replace('[','').replace(']','').replace(',','').replace('\'',''))")
+                  IFS=', ' read -r -a streams_array <<< "$STREAMS"
+
+
+                  # For each alert
+                  for i in "${!names_array[@]}"; do
+
+
+                    # Is the detect trigger created ?
+                    TMP=$(az datafactory trigger show --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_detect_"${names_array[i]}"_"${streams_array[i]}"_trigger")
+                    if [[ $TMP != *"PROPERTIES"* && $TMP != *"properties"* ]]; then #si no existe, se creara
+                      echo "create detect trigger"
+                    else 
+                      echo "update detect trigger"
+
+                      az datafactory trigger stop --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_detect_"${names_array[i]}"_"${streams_array[i]}"_trigger"
+                    fi
+
+
+                    # Get the Model name from the alert
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${ALERT_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    MODEL_NAME=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['model'] for i in yaml.safe_load(sys.stdin)['alerts'] if i['name']=='"${names_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%s\n' "$MODEL_NAME"
+
+
+                    # Get the Freq of the Stream from the alert
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${STREAM_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    FREQ_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['frequency'].split(' ')[1] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${streams_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    FREQ_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['frequency'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${streams_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%d %s %s %s %s\n' "$i" "${names_array[i]}" "${streams_array[i]}" 
+                    printf '%s %d\n' "$FREQ_UNITS" "$FREQ_VALUE"
+
+
+                    # Get the Delay of the Stream from the alert
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${STREAM_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    DELAY_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${streams_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    DELAY_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[1] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${streams_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%s %s\n' "$DELAY_VALUE" "$DELAY_UNITS"
+
+
+                    # Calculate the MINUTES and HOURS for schedule
+                    DELAY_VALUE=$((DELAY_VALUE%FREQ_VALUE))
+                    if [[ "$FREQ_UNITS" == "MINUTE" ]]; then
+                      DETECT_MINUTES=$(for x in {0..59}; do  if (( $x % "$FREQ_VALUE" == 0 )); then x=$(($x + ($DELAY_VALUE%60))); echo "$x,"; fi; done); DETECT_MINUTES=${DETECT_MINUTES::-1}
+                      DETECT_HOURS=$(for x in {0..23}; do  echo "$x,"; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '1 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$FREQ_UNITS" == "HOUR" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(for x in {0..23}; do  if (( $x % "$FREQ_VALUE" == 0 )); then echo "$x,"; fi; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '2 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$FREQ_UNITS" == "DAY" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(($DELAY_VALUE/60))
+                      printf '3 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    fi
+
+
+                    # Create/Update detect trigger
+                    properties="{\"type\":\"ScheduleTrigger\", \
+                    \"pipelines\": \
+                      [{\"parameters\": {\
+                      \"ALERT_NAME\": \"${names_array[i]}\", \
+                      \"ALERTS_CONFIG\": \"${ALERT_FILE}\", \
+                      \"CHANNELS_CONFIG\": \"${CHANNEL_FILE}\", \
+                      \"INTERNAL_CONFIG\": \"internal_config_dev.yml\", \
+                      \"MODELS_CONFIG\": \"${MODEL_FILE}\", \
+                      \"STREAMS_CONFIG\": \"${STREAM_FILE}\"}, \
+                      \"pipelineReference\": \
+                        {\"type\":\"PipelineReference\",\"referenceName\":\"detect\"}}], \
+                    \"typeProperties\": \
+                      {\"recurrence\": \
+                        {\"timeZone\":\"UTC\", \
+                        \"endTime\": null, \
+                        \"startTime\": \"2022-07-01T00:00:00.0000001Z\", \
+                        \"frequency\": \"Week\", \
+                        \"interval\":1, \
+                        \"schedule\": { \
+                          \"additionalProperties\":null, \
+                          \"minutes\": [${DETECT_MINUTES}], \
+                          \"hours\": [${DETECT_HOURS}], \
+                          \"weekDays\":[ \"Monday\", \"Tuesday\", \"Wednesday\", \"Thursday\", \"Friday\", \"Saturday\", \"Sunday\" ], \
+                          \"monthDays\":null, \
+                          \"monthlyOccurrences\":null \
+                        }
+                        
+                        } \
+                      } \
+                    }"
+                    az datafactory trigger create --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_detect_"${names_array[i]}"_"${streams_array[i]}"_trigger" --properties "${properties}"
+
+                    #parar trigger deteccion
+                    az datafactory trigger start --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_detect_"${names_array[i]}"_"${streams_array[i]}"_trigger"
+
+                  done
+
+
+
+                ############################################# Streams.yaml #############################################
+                elif [[ "$val" == *"streams"* ]]; then
+
+                  # Get the stream, model and file names
+                  WORDTOREMOVE="streams"
+                  STREAM_FILE=${val}
+                  WORDTOADD="alerts"
+                  ALERT_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="channels"
+                  CHANNEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="models"
+                  MODEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+
+                  # get the streams name of each stream
+                  DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${STREAM_FILE}"
+                  FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                  NAMES=$(echo "$FILE_CONTENT" | \
+                  python -c "import sys, yaml; \
+                  print(str([i['name'] for i in yaml.safe_load(sys.stdin)['streams']]).replace('[','').replace(']','').replace(',','').replace('\'',''))")
+                  IFS=', ' read -r -a names_array <<< "$NAMES"
+
+                  # For each stream
+                  for i in "${!names_array[@]}"; do
+                    # Is the save_hist trigger created ?
+                    TMP=$(az datafactory trigger show --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_hist_"${names_array[i]}"_trigger")
+                    echo "$TMP"
+                    if [[ $TMP != *"PROPERTIES"* && $TMP != *"properties"* ]]; then #si no existe, se creara
+                      echo "create save_hist trigger"
+                    else 
+                      echo "update save_hist trigger"
+
+                      az datafactory trigger stop --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_hist_"${names_array[i]}"_trigger"
+                    fi
+
+                    # Is the save_datapoint trigger created ?
+                    TMP=$(az datafactory trigger show --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_datapoint_"${names_array[i]}"_trigger")
+                    if [[ $TMP != *"PROPERTIES"* && $TMP != *"properties"* ]]; then #si no existe, se creara
+                      echo "create save_datapoint trigger"
+                    else 
+                      echo "update save_datapoint trigger"
+
+                      az datafactory trigger stop --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_datapoint_"${names_array[i]}"_trigger"
+                    fi
+
+                    # Get the Freq of the Stream
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${STREAM_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    FREQ_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['frequency'].split(' ')[1] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${names_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    FREQ_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['frequency'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${names_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%d %s\n' "$i" "${names_array[i]}" 
+                    printf '%s %d\n' "$FREQ_UNITS" "$FREQ_VALUE"
+
+                    # Get the Delay of the Stream from the alert
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${STREAM_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    DELAY_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${names_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    DELAY_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[1] for i in yaml.safe_load(sys.stdin)['streams'] if i['name']=='"${names_array[i]}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%s %s\n' "$DELAY_VALUE" "$DELAY_UNITS"
+
+                    # Calculate the MINUTES and HOURS for schedule
+                    DELAY_VALUE=$((DELAY_VALUE%FREQ_VALUE))
+                    if [[ "$FREQ_UNITS" == "MINUTE" ]]; then
+                      DETECT_MINUTES=$(for x in {0..59}; do  if (( $x % "$FREQ_VALUE" == 0 )); then x=$(($x + ($DELAY_VALUE%60))); echo "$x,"; fi; done); DETECT_MINUTES=${DETECT_MINUTES::-1}
+                      DETECT_HOURS=$(for x in {0..23}; do  echo "$x,"; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '1 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$FREQ_UNITS" == "HOUR" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(for x in {0..23}; do  if (( $x % "$FREQ_VALUE" == 0 )); then echo "$x,"; fi; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '2 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$FREQ_UNITS" == "DAY" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(($DELAY_VALUE/60))
+                      printf '3 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    fi
+
+                    # Create/Update save_hist trigger
+                    MINUTE=$(echo "$DETECT_MINUTES" | \
+                    python -c "import sys, datetime; from heapq import nsmallest;\
+                    print( max(nsmallest(2, sys.stdin.read().split(',\n'), key=lambda x:abs(int(x)-int((datetime.datetime.now() + datetime.timedelta(minutes=5)).minute)))) )")
+                    HOUR=$(echo "$DETECT_HOURS" | \
+                    python -c "import sys, datetime; from heapq import nsmallest;\
+                    print( max(nsmallest(2, sys.stdin.read().split(',\n'), key=lambda x:abs(int(x)-int((datetime.datetime.now() + datetime.timedelta(minutes=5)).hour)))) )")
+                    END_TIME=$(python -c "import sys, datetime; \
+                    print( (datetime.datetime.utcnow() + datetime.timedelta(minutes=3)).strftime('%Y-%m-%dT%H:%M') + ':05.0000001Z' )")
+                    echo "$END_TIME"
+                    echo "$HOUR"
+                    echo "$MINUTE"
+                    
+                    properties="{\"type\":\"ScheduleTrigger\", \
+                    \"pipelines\": \
+                      [{\"parameters\": {\
+                      \"STREAM_NAME\": \"${names_array[i]}\", \
+                      \"INTERNAL_CONFIG\": \"internal_config_dev.yml\", \
+                      \"STREAMS_CONFIG\": \"${STREAM_FILE}\"}, \
+                      \"pipelineReference\": \
+                        {\"type\":\"PipelineReference\",\"referenceName\":\"save_hist\"}}], \
+                    \"typeProperties\": \
+                      {\"recurrence\": \
+                        {\"endTime\":\"${END_TIME}\", \
+                        \"frequency\":\"MINUTE\", \
+                        \"interval\":2, \
+                        \"startTime\":\"2022-07-01T00:00:01.0000001Z\", \
+                        \"timeZone\":\"UTC\"} \
+                      } \
+                    }"
+                    az datafactory trigger create --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_hist_"${names_array[i]}"_trigger" --properties "${properties}"
+
+                    # Create/Update save_datapoint trigger
+                    properties="{\"type\":\"ScheduleTrigger\", \
+                    \"pipelines\": \
+                      [{\"parameters\": {\
+                      \"STREAM_NAME\": \"${names_array[i]}\", \
+                      \"INTERNAL_CONFIG\": \"internal_config_dev.yml\", \
+                      \"STREAMS_CONFIG\": \"${STREAM_FILE}\"}, \
+                      \"pipelineReference\": \
+                        {\"type\":\"PipelineReference\",\"referenceName\":\"save_datapoint\"}}], \
+                    \"typeProperties\": \
+                      {\"recurrence\": \
+                        {\"timeZone\":\"UTC\", \
+                        \"endTime\": null, \
+                        \"startTime\": \"2022-07-01T00:00:00.0000001Z\", \
+                        \"frequency\": \"Week\", \
+                        \"interval\":1, \
+                        \"schedule\": { \
+                          \"additionalProperties\":null, \
+                          \"minutes\": [${DETECT_MINUTES}], \
+                          \"hours\": [${DETECT_HOURS}], \
+                          \"weekDays\":[ \"Monday\", \"Tuesday\", \"Wednesday\", \"Thursday\", \"Friday\", \"Saturday\", \"Sunday\" ], \
+                          \"monthDays\":null, \
+                          \"monthlyOccurrences\":null \
+                        }
+                        
+                        } \
+                      } \
+                    }"
+                    az datafactory trigger create --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_datapoint_"${names_array[i]}"_trigger" --properties "${properties}"
+
+                    #arrancar trigger save_hist
+                    az datafactory trigger start --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_hist_"${names_array[i]}"_trigger"
+
+                    #parar trigger save_datapoint
+                    az datafactory trigger stop --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_save_datapoint_"${names_array[i]}"_trigger"
+                  done
+                
+
+
+                ############################################# Models.yaml #############################################
+                elif [[ "$val" == *"models"* ]]; then
+
+                  # Get the stream, model and file names
+                  WORDTOREMOVE="models"
+                  MODEL_FILE=${val}
+                  WORDTOADD="streams"
+                  STREAM_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="channels"
+                  CHANNEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+                  WORDTOADD="models"
+                  MODEL_FILE=${val//$WORDTOREMOVE/$WORDTOADD}
+
+                  # get the models name of each stream
+                  DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${MODEL_FILE}"
+                  FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                  NAMES=$(echo "$FILE_CONTENT" | \
+                  python -c "import sys, yaml; \
+                  print(str([i['name'] for i in yaml.safe_load(sys.stdin)['models']]).replace('[','').replace(']','').replace(',','').replace('\'',''))")
+                  IFS=', ' read -r -a names_array <<< "$NAMES"
+
+                  # For each model
+                  for i in "${!names_array[@]}"; do
+                    # Get the Model name
+                    MODEL_NAME="${names_array[i]}"
+                    printf '%s\n' "$MODEL_NAME"
+
+                    # Get the train_type
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${MODEL_FILE}" 
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    TRAIN_TYPE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['train_type'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+
+
+                    # Is the train trigger created ?
+                    TMP=$(az datafactory trigger show --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_train_"${TRAIN_TYPE}"_"${names_array[i]}"_trigger")
+                    echo "$TMP"
+                    if [[ $TMP != *"PROPERTIES"* && $TMP != *"properties"* ]]; then #si no existe, se creara
+                      echo "create train trigger"
+                    else 
+                      echo "update train trigger"
+
+                      az datafactory trigger stop --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_train_"${TRAIN_TYPE}"_"${names_array[i]}"_trigger"
+                    fi
+
+
+                    # Get the Retraining freq for the model training
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${MODEL_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    RETRAINING_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['retraining'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+                    RETRAINING_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['retraining'].split(' ')[1].lower().capitalize() for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+                    if [ -z "${RETRAINING_VALUE}" ]; then
+                      RETRAINING_VALUE=1
+                      RETRAINING_UNITS="Week"
+                    fi
+
+                    printf '%s %s\n' "$RETRAINING_VALUE" "$RETRAINING_UNITS"
+
+                    # Get the Delay of the Stream from the alert
+                    DBFS_PATH="dbfs:/config_files_pro/inditex_anomaly_detector/${MODEL_FILE}"
+                    FILE_CONTENT=$(databricks fs cat "${DBFS_PATH}")
+                    DELAY_VALUE=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[0] for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+                    DELAY_UNITS=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['delay'].split(' ')[1].lower().capitalize() for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%s %s\n' "$DELAY_VALUE" "$DELAY_UNITS"
+
+
+                    # Calculate the MINUTES and HOURS for schedule
+                    if (( RETRAINING_VALUE > DELAY_VALUE )); then
+                      DELAY_VALUE=$((DELAY_VALUE%RETRAINING_VALUE))
+                    fi
+                    if [[ "$RETRAINING_UNITS" == "Minute" ]]; then
+                      DETECT_MINUTES=$(for x in {0..59}; do  if (( $x % "$RETRAINING_VALUE" == 0 )); then x=$(($x + ($DELAY_VALUE%60))); echo "$x,"; fi; done); DETECT_MINUTES=${DETECT_MINUTES::-1}
+                      DETECT_HOURS=$(for x in {0..23}; do  echo "$x,"; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '1 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$RETRAINING_UNITS" == "Hour" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(for x in {0..23}; do  if (( $x % "$RETRAINING_VALUE" == 0 )); then echo "$x,"; fi; done); DETECT_HOURS=${DETECT_HOURS::-1}
+                      printf '2 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    elif [[ "$RETRAINING_UNITS" == "Day" ]]; then
+                      DETECT_MINUTES=$(($DELAY_VALUE%60))
+                      DETECT_HOURS=$(($DELAY_VALUE/60))
+                      printf '3 %s %s\n' "$DETECT_MINUTES" "$DETECT_HOURS"
+                    fi
+
+                    STREAM_NAME=$(echo "$FILE_CONTENT" | \
+                    python -c "import sys, yaml; \
+                    print(str([i['stream'] for i in yaml.safe_load(sys.stdin)['models'] if i['name']=='"${MODEL_NAME}"']).replace('[','').replace(']','').replace('\'',''))")
+                    printf '%s\n' "$STREAM_NAME"
+                    
+                    # Create/Update train trigger TODO
+                    properties="{\"type\":\"ScheduleTrigger\", \
+                    \"pipelines\": \
+                      [{\"parameters\": {\
+                      \"MODEL_NAME\": \"${names_array[i]}\", \
+                      \"INTERNAL_CONFIG\": \"internal_config_dev.yml\", \
+                      \"MODELS_CONFIG\": \"${MODEL_FILE}\", \
+                      \"STREAMS_CONFIG\": \"${STREAM_FILE}\", \
+                      \"STREAM_NAME\": \"${STREAM_NAME}\"}, \
+                      \"pipelineReference\": \
+                        {\"type\":\"PipelineReference\",\"referenceName\":\"train_${TRAIN_TYPE}\"}}], \
+                    \"typeProperties\": \
+                      {\"recurrence\": \
+                        {\"timeZone\":\"UTC\", \
+                        \"endTime\": null, \
+                        \"startTime\": \"2022-07-01T00:00:00.0000001Z\", \
+                        \"frequency\": \"Week\", \
+                        \"interval\":1, \
+                        \"schedule\": { \
+                          \"additionalProperties\":null, \
+                          \"minutes\": [${DETECT_MINUTES}], \
+                          \"hours\": [${DETECT_HOURS}], \
+                          \"weekDays\":[ \"Monday\", \"Tuesday\", \"Wednesday\", \"Thursday\", \"Friday\", \"Saturday\", \"Sunday\" ], \
+                          \"monthDays\":null, \
+                          \"monthlyOccurrences\":null \
+                        }
+                        
+                        } \
+                      } \
+                    }"
+                    az datafactory trigger create --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_train_"${TRAIN_TYPE}"_"${names_array[i]}"_trigger" --properties "${properties}"
+                  
+                    #arrancar trigger entrenamiento
+                    az datafactory trigger start --factory-name "${IAD_DATAFACTORY_NAME}" --resource-group "${IAD_RESOURCE_GROUP}" --name "iad_train_"${TRAIN_TYPE}"_"${names_array[i]}"_trigger"
+
+                  done
+                fi
+              fi            
+            done
+
+
+          displayName: Automatic deploy
+          env:
+            SPN_ID: $(IAD_SPN_CICD_ID)
+            SPN_SECRET: $(IAD_SPN_CICD_SECRET)
+            TENANT: $(TENANT)
+            ACCOUNT_KEY: $(IAD_STORAGE_ACCOUNT_KEY)
+            ACCOUNT_NAME: $(IAD_STORAGE_ACCOUNT_NAME)
+            CONTAINER_NAME: $(IAD_STORAGE_CONTAINER_NAME)
+            DATABRICKS_HOST: $(IAD_DATABRICKS_HOST)
+            DATABRICKS_TOKEN: $(IAD_DATABRICKS_TOKEN)
+            AZURE_CORE_ONLY_SHOW_ERRORS: 'True'

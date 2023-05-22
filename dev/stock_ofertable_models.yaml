@@ -1,0 +1,75 @@
+---
+models:
+
+- name: Zscoretiny
+  retraining: 1 HOUR
+  delay: 5 MINUTE
+  train_type: fast
+  stream: offerable_stock_tiny_2min_30seg
+  parameters:
+    window_value: 24
+    query_hour_train: 
+      select
+        snapshot_id,
+        country_iso,
+        online_store_name,
+        name_store,
+        sum_available_stock_qty
+      from
+        DIGITAL_DATA.STOCK.V_PRO_V2_OFFERABLE_STOCK_24H_TINY
+      WHERE
+        DIGITAL_DATA.STOCK.V_PRO_V2_OFFERABLE_STOCK_24H_TINY.SNAPSHOT_ID > DATEADD(hour, -30, GETDATE()) and
+        DIGITAL_DATA.STOCK.V_PRO_V2_OFFERABLE_STOCK_24H_TINY.cod_stock_source not like '%PST%' and
+        DIGITAL_DATA.STOCK.V_PRO_V2_OFFERABLE_STOCK_24H_TINY.name_store not like '%Showroom%'
+    query_hour_detect: 
+      select
+        SNAPSHOT_ID, 
+        COD_STOCK_SOURCE, 
+        ONLINE_STORE_NAME, 
+        CAMPAIGN, 
+        SECTION, 
+        PRODUCT, 
+        SUM_AVAILABLE_STOCK_QTY
+      from
+        DIGITAL_DATA.RAW.OFFERABLE_STOCK_AGG_TINY_PRO_V2
+      WHERE
+        DIGITAL_DATA.RAW.OFFERABLE_STOCK_AGG_TINY_PRO_V2.SNAPSHOT_ID > DATEADD(hour, -3, GETDATE()) and
+        DIGITAL_DATA.RAW.OFFERABLE_STOCK_AGG_TINY_PRO_V2.cod_stock_source not like '%PST%'
+    query_coefficients:
+      select
+        name_store,
+        timestamp::TIMESTAMP_NTZ as timestamp,
+        country_iso,
+        online_store_name,
+        day_rolling_avg,
+        day_rolling_std
+      from
+        DIGITAL_DATA.INANDE.OFFERABLE_STOCK_TINY_HOUR_COEFFICIENTS
+      WHERE
+        timestamp = (select max(timestamp) from DIGITAL_DATA.INANDE.OFFERABLE_STOCK_TINY_HOUR_COEFFICIENTS)
+  tables:
+    zscore_coefficients:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_TINY_HOUR_COEFFICIENTS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP VARCHAR(40), COUNTRY_ISO VARCHAR(40), ONLINE_STORE_NAME VARCHAR(40), DAY_ROLLING_AVG DECIMAL (20), 
+        DAY_ROLLING_STD DECIMAL (20)
+    zscore_coefficients_previous:
+      name: DIGITAL_DATA.INANDE.OFFERABLE_STOCK_TINY_HOUR_COEFFICIENTS_PREVIOUS
+      schema: NAME_STORE VARCHAR(40), TIMESTAMP TIMESTAMP, Z_SCORE_INDICADOR DECIMAL (20)
+
+
+
+
+
+
+credentials:
+
+- name: azure_storage_creds
+  keyvault: inandekvtweu1dev002
+  user: inditexanomalydetector-azure-storage-user
+  password: inditexanomalydetector-azure-storage-pass
+  url: inditexanomalydetector-azure-storage-url
+
+- name: azure_anomaly_detector_creds
+  keyvault: inandekvtweu1dev002
+  credentials: inditexanomalydetector-azure-anomalydetector-pass
+  endpoint: https://westeurope.api.cognitive.microsoft.com/

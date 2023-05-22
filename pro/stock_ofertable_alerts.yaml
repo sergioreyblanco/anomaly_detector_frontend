@@ -1,0 +1,23 @@
+---
+alerts:
+
+
+- name: stock_5min_low
+  direction: upper
+  parameters: 
+    z_score_indicador: [1, 2, 3, 4]
+  type: zscore
+  stream: offerable_stock_5min
+  channel: stock_teams_alerts_adaptive_low
+  model: zscore
+  notification_type: open
+
+- name: stock_5min_high
+  direction: upper
+  parameters: 
+    z_score_indicador: [1, 4]
+  type: zscore
+  stream: offerable_stock_5min
+  channel: stock_teams_alerts_adaptive_high
+  model: zscore
+  notification_type: open

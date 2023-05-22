@@ -1,0 +1,137 @@
+---
+channels:
+
+- name: stock_teams_alerts_adaptive_low
+  type: TeamsAdaptiveCardStockLow
+  URL: https://grupoinditex.webhook.office.com/webhookb2/713fe33b-11c3-434d-a1c2-e9d203b3f35f@c8e8bdb6-8e7c-41d5-bc41-37fff3c33b75/IncomingWebhook/3051acdaa2d146a5bb60a66fd5b67b6f/0976913e-aa8b-4798-93e8-25c71a25ee17
+  parametrized_card: >
+    {{
+        "type":"message",
+        "attachments":[
+        {{
+            "contentType":"application/vnd.microsoft.card.adaptive",
+            "contentUrl":"null",
+            "content":{{
+                "type": "AdaptiveCard",
+                "body": [
+                    {{
+                        "type": "TextBlock",
+                        "text": "{STOCK_SOURCE}",
+                        "wrap": "true",
+                        "size": "Large",
+                        "color": "",
+                        "isSubtle": "false",
+                        "maxLines": 15,
+                        "horizontalAlignment": "Center",
+                        "spacing": "Default"
+                    }},
+                    {{
+                        "type": "Image",
+                        "url": "{GRAPHICS}",
+                        "msTeams": {{
+                            "allowExpand": "true"
+                        }}
+                    }},
+                    {COLUMN_SETS},
+                    {{
+    "type": "ActionSet", 
+    "actions": [
+        {{
+      "type": "Action.ToggleVisibility",
+      "title": "Details",
+      "targetElements": [ "datos" ]
+        }}
+      ]
+    }},
+    {COLUMN_SETS_DETAILS}
+                ],
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "actions": [
+                ]
+            }}
+        }}
+        ]
+    }}
+  plot_configuration:
+    credentials: google_cloud_storage_creds
+    bucket: "zcom-stock-alerts"
+    project: "zaracom-datalake"
+    blob: "inande"
+
+
+
+- name: stock_teams_alerts_adaptive_high
+  type: TeamsAdaptiveCardStockHigh
+  URL: https://grupoinditex.webhook.office.com/webhookb2/713fe33b-11c3-434d-a1c2-e9d203b3f35f@c8e8bdb6-8e7c-41d5-bc41-37fff3c33b75/IncomingWebhook/3051acdaa2d146a5bb60a66fd5b67b6f/0976913e-aa8b-4798-93e8-25c71a25ee17
+  parametrized_card: >
+    {{
+        "type":"message",
+        "attachments":[
+        {{
+            "contentType":"application/vnd.microsoft.card.adaptive",
+            "contentUrl":"null",
+            "content":{{
+                "type": "AdaptiveCard",
+                "body": [
+                    {{
+                        "type": "TextBlock",
+                        "text": "{STOCK_SOURCE}",
+                        "wrap": "true",
+                        "size": "Large",
+                        "color": "",
+                        "isSubtle": "false",
+                        "maxLines": 2,
+                        "horizontalAlignment": "Center",
+                        "spacing": "Default"
+                    }},
+                    {{
+                        "type": "Image",
+                        "url": "{GRAPHICS}",
+                        "msTeams": {{
+                            "allowExpand": "true"
+                        }}
+                    }},
+                    {COLUMN_SETS},
+                    {{
+    "type": "ActionSet", 
+    "actions": [
+        {{
+      "type": "Action.ToggleVisibility",
+      "title": "Details",
+      "targetElements": [ "datos" ]
+        }}
+      ]
+    }},
+    {COLUMN_SETS_DETAILS}
+                ],
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "actions": [
+                ]
+            }}
+        }}
+        ]
+    }}
+  plot_configuration:
+    credentials: google_cloud_storage_creds
+    bucket: "zcom-stock-alerts"
+    project: "zaracom-datalake"
+    blob: "inande"
+
+
+
+
+credentials:
+- name: google_cloud_storage_creds
+  keyvault: inandekvtweu1dev002
+  type: inditexanomalydetector-googlecloudstorage-type
+  project_id: inditexanomalydetector-googlecloudstorage-projectid
+  private_key_id: inditexanomalydetector-googlecloudstorage-privatekeyid
+  private_key: inditexanomalydetector-googlecloudstorage-privatekey
+  client_email: inditexanomalydetector-googlecloudstorage-clientemail
+  client_id: inditexanomalydetector-googlecloudstorage-clientid
+  auth_uri: inditexanomalydetector-googlecloudstorage-authuri
+  token_uri: inditexanomalydetector-googlecloudstorage-tokenuri
+  auth_cert: inditexanomalydetector-googlecloudstorage-authprovider
+  cert_url: inditexanomalydetector-googlecloudstorage-clientcert

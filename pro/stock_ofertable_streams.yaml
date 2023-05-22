@@ -1,0 +1,51 @@
+---
+sources:
+
+- name: snowflake_digitaldatapipeline
+  type: snowflake
+  keyvault: inandekvtweu1pro002
+  user: A-snowflake-digitaldatapipeline-user
+  password: A-snowflake-digitaldatapipeline-pass
+  url: A-snowflake-A-urlshort
+  warehouse: DIGITALDATA_PIPELINE_WH
+  database: CORE_ANALYTICS
+  schema: ZARA
+
+
+
+
+
+streams:
+
+- name: offerable_stock_5min
+  source: snowflake_digitaldatapipeline
+  query:
+    select distinct
+      {FREQ_START}convert_timezone('UTC', t.INGESTION_AT){FREQ_END} as TIMESTAMP, 
+      t.NAME_STORE as NAME_STORE,
+      t.COUNTRY_ISO,
+      sum(t.QTY) as QTY,
+      sum(t.PRESALE_UNITS) as PRESALE_UNITS
+    from
+      "DIGITAL_DATA"."STOCK"."V_OFFERABLE_STOCK_STREAMS_V2_5MINUTES" as t
+    where
+      t.INGESTION_AT >= {FROM_TIME} 
+      and t.INGESTION_AT <= {TO_TIME}
+      and t.COD_STOCK_SOURCE not ilike '%PST%'
+      and t.name_store not ilike '%Showroom%'
+    group by
+      1, 2, 3
+    order by
+      1, 2, 3 asc
+  columns:
+    date: TIMESTAMP
+    measure: 
+    - QTY
+    - PRESALE_UNITS
+    dim:
+    - NAME_STORE
+    - COUNTRY_ISO
+  frequency: 5 MINUTE
+  historic_span: 5 DAY
+  delay: 4 MINUTE
+  fill_gaps: last_value

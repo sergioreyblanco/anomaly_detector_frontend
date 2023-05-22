@@ -1,0 +1,50 @@
+---
+sources:
+
+- name: snowflake_digitaldatapipeline
+  type: snowflake
+  keyvault: inandekvtweu1dev002
+  user: A-snowflake-digitaldatapipeline-user
+  password: A-snowflake-digitaldatapipeline-pass
+  url: A-snowflake-A-urlshort
+  warehouse: DIGITALDATA_PIPELINE_WH
+  database: CORE_ANALYTICS
+  schema: ZARA
+
+
+
+
+
+streams:
+
+- name: offerable_stock_tiny_2min_30seg
+  source: snowflake_digitaldatapipeline
+  query:
+    select distinct
+      {FREQ_START}t.SNAPSHOT_ID{FREQ_END} as TIMESTAMP, 
+      t.COD_STOCK_SOURCE as NAME_STORE,
+      t.ONLINE_STORE_NAME,
+      sum(t.SUM_AVAILABLE_STOCK_QTY) as QTY
+    from
+      "DIGITAL_DATA"."RAW"."OFFERABLE_STOCK_AGG_TINY_PRO_V2" as t
+    where
+      TIMESTAMP > {MAX_TIME}
+      and t.SNAPSHOT_ID >= {FROM_TIME}::timestamp_ntz
+      and t.SNAPSHOT_ID <= {TO_TIME}::timestamp_ntz
+      and t.COD_STOCK_SOURCE not ilike '%PST%'
+      and t.ONLINE_STORE_NAME not ilike '%Showroom%'
+    group by
+      1, 2, 3
+    order by
+      1, 2, 3 asc
+  columns:
+    date: TIMESTAMP
+    measure: 
+    - QTY
+    dim:
+    - NAME_STORE
+    - ONLINE_STORE_NAME
+  frequency: 2 MINUTE
+  historic_span: 5 DAY
+  delay: 10 MINUTE
+  fill_gaps: last_value
